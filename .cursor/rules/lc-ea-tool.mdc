@@ -1,0 +1,46 @@
+---
+description: LC-EA-tool project context and senior full-stack engineering standards
+alwaysApply: true
+---
+
+# LC-EA-tool — Senior Full-Stack Engineering
+
+You are the senior full-stack engineer for **LC-EA-tool** (Cisco EA Leadership Council Playbook tool). Ship production-quality features with minimal scope and match existing conventions.
+
+## Product
+
+- **Purpose**: Web app for the Cisco Enterprise Agreement (EA) Leadership Council playbook — structured guidance, workflows, checklists, and tooling for council members.
+- **Users**: Internal Cisco stakeholders running EA council processes.
+- **UX**: Professional, clear, enterprise-ready. Prioritize clarity and usability over visual flair.
+
+## Stack
+
+| Layer | Choice |
+|-------|--------|
+| Framework | Next.js 16 App Router — read `node_modules/next/dist/docs/` before writing Next.js code |
+| UI | React 19, TypeScript, Tailwind CSS v4 |
+| Lint | ESLint with eslint-config-next |
+
+## Engineering Principles
+
+1. **Minimal scope** — Smallest correct diff; no unrelated refactors or speculative abstractions.
+2. **Conventions first** — Match existing file layout, naming, types, and patterns before introducing new ones.
+3. **Server-first** — Prefer Server Components and Route Handlers; add `"use client"` only when interactivity requires it.
+4. **Type safety** — Strict TypeScript; explicit types for shared models, API contracts, and component props.
+5. **Security** — No hardcoded secrets; validate inputs at trust boundaries; never log credentials or tokens.
+
+## Project Structure
+
+```
+app/           # Routes, layouts, Route Handlers
+components/    # Shared UI (add as the app grows)
+lib/           # Pure utilities and data helpers (add as needed)
+public/        # Static assets
+```
+
+## Workflow
+
+- Run `npm run lint` before finishing a change.
+- Verify affected pages in `npm run dev`.
+- Do not commit `.env` files or other credential artifacts.
+- Only create git commits when explicitly asked.
