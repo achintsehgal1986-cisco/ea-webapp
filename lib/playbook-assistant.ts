@@ -227,12 +227,31 @@ function scoreChunk(
   return score;
 }
 
-function firstClause(text: string, maxLen = 100): string {
-  const clause = text.split(/(?<=[.;])\s+/)[0]?.trim() ?? text;
-  if (clause.length <= maxLen) return clause;
-  const trimmed = clause.slice(0, maxLen);
-  const lastSpace = trimmed.lastIndexOf(" ");
-  return `${trimmed.slice(0, lastSpace > 60 ? lastSpace : maxLen).trim()}…`;
+function playbookExcerpt(text: string, maxLen = 480): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxLen) {
+    return trimmed;
+  }
+
+  const sentences = trimmed.split(/(?<=[.!?])\s+/).filter(Boolean);
+  let result = "";
+
+  for (const sentence of sentences) {
+    const next = result ? `${result} ${sentence}` : sentence;
+    if (next.length <= maxLen) {
+      result = next;
+    } else {
+      break;
+    }
+  }
+
+  if (result.length > 0) {
+    return result;
+  }
+
+  const cut = trimmed.slice(0, maxLen);
+  const lastSpace = cut.lastIndexOf(" ");
+  return lastSpace > maxLen * 0.5 ? cut.slice(0, lastSpace).trim() : cut.trim();
 }
 
 function isWhoQuestion(query: string): boolean {
@@ -374,19 +393,18 @@ function composeNaturalAnswer(
       .map((chunk) => chunk.text),
     userRole,
   )
-    .slice(0, 2)
-    .map((detail) => ensurePeriod(firstClause(detail, 110)));
+    .slice(0, 3)
+    .map((detail) => ensurePeriod(detail));
 
-  const summary = ensurePeriod(firstClause(step.summary, 150));
+  const summary = ensurePeriod(step.summary);
   const lead = roleAnswerLead(query, userRole);
 
   let body: string;
   if (details.length === 0) {
     body = summary;
-  } else if (details.length === 1) {
-    body = `${summary} ${details[0]}`;
   } else {
-    body = `${summary}\n\n${details[0]} ${details[1]}`;
+    const bullets = details.map((detail) => `• ${detail}`).join("\n");
+    body = `${summary}\n\n${bullets}`;
   }
 
   const framed = `${lead}${body.charAt(0).toLowerCase()}${body.slice(1)}`;
@@ -568,7 +586,7 @@ function formatDetailAnswer(
     if (usedKeys.includes(match.detailKey)) continue;
     usedKeys.push(match.detailKey);
     discussed.add(match.detailKey);
-    parts.push(`• ${ensurePeriod(firstClause(match.detail, 220))}`);
+    parts.push(`• ${ensurePeriod(match.detail)}`);
   }
 
   if (usedKeys.length === 0) {
@@ -596,7 +614,7 @@ function formatDetailAnswer(
         for (const entry of freshDetails) {
           usedKeys.push(entry.detailKey);
           discussed.add(entry.detailKey);
-          parts.push(`• ${ensurePeriod(firstClause(entry.detail, 220))}`);
+          parts.push(`• ${ensurePeriod(entry.detail)}`);
         }
       }
     }
@@ -827,7 +845,7 @@ function phaseLabel(step: PlaybookStep): string {
 
 function describeNextStep(step: PlaybookStep): string {
   return ensurePeriod(
-    `Up next (${phaseLabel(step)}): ${shortStepTitle(step)} — ${firstClause(step.summary, 120)}`,
+    `Up next (${phaseLabel(step)}): ${shortStepTitle(step)} — ${playbookExcerpt(step.summary, 320)}`,
   );
 }
 
@@ -1090,7 +1108,7 @@ export function answerPlaybookQuestion(
   const step = pickBestStepFromRanked(ranked, context.userRole);
 
   if (!step) {
-    const fallback = ensurePeriod(firstClause(topChunks[0]?.text ?? "", 180));
+    const fallback = ensurePeriod(playbookExcerpt(topChunks[0]?.text ?? "", 400));
     return { answer: fallback, found: true };
   }
 
