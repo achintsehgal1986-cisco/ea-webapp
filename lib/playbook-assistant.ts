@@ -14,6 +14,8 @@ export type AssistantContext = {
   lastStepId?: string;
   userRole?: UserRole;
   customerName?: string;
+  lastAnswer?: string;
+  discussedDetailIds?: string[];
 };
 
 export type AssistantResponse = {
@@ -21,6 +23,7 @@ export type AssistantResponse = {
   found: boolean;
   actions?: AssistantAction[];
   lastStepId?: string;
+  discussedDetailIds?: string[];
 };
 
 type KnowledgeChunk = {
@@ -48,8 +51,22 @@ const SYNONYMS: Record<string, string[]> = {
   health: ["health check", "healthcheck", "activation", "deployed"],
   modify: ["modification", "change", "wifi", "technology"],
   milestone: ["milestones", "dates", "timeline", "anniversary"],
-  am: ["account manager", "account managers"],
-  se: ["sales engineer", "sales engineers", "specialist"],
+  am: ["account manager", "account managers", "account executive", "ae"],
+  se: ["sales engineer", "sales engineers", "specialist", "technical"],
+  workspace: ["smart account", "smart accounts", "virtual account", "ea workspace"],
+  technical: [
+    "architecture",
+    "architectures",
+    "sizing",
+    "design",
+    "demo",
+    "poc",
+    "validation",
+    "portfolio se",
+    "specialist se",
+    "environment",
+    "deployment",
+  ],
 };
 
 const STOP_WORDS = new Set([
@@ -60,6 +77,29 @@ const STOP_WORDS = new Set([
 
 function normalize(text: string): string {
   return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function stripConversationalNoise(query: string): string {
+  return normalize(query)
+    .replace(/\b(as an?|i'?m an?|for|from the perspective of)\s+(se|sales engineer|ae|am|account executive)\b/gi, " ")
+    .replace(/\b(can you|could you|please|tell me|help me|i need to know|what is|what are|how do i|how should i)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function pickVariant(seed: string, options: string[]): string {
+  if (options.length === 0) return "";
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash + seed.charCodeAt(index) * (index + 1)) | 0;
+  }
+  return options[Math.abs(hash) % options.length];
+}
+
+function hasTechnicalIntent(query: string): boolean {
+  return /\b(technical|architecture|install base|workspace|smart account|provision|health check|portfolio|environment|deploy|sizing|design|demo|poc)\b/i.test(
+    query,
+  );
 }
 
 function expandQuery(query: string): string[] {
@@ -147,7 +187,12 @@ function buildKnowledgeBase(): KnowledgeChunk[] {
 
 const KNOWLEDGE_BASE = buildKnowledgeBase();
 
-function scoreChunk(chunk: KnowledgeChunk, query: string, queryTerms: string[]): number {
+function scoreChunk(
+  chunk: KnowledgeChunk,
+  query: string,
+  queryTerms: string[],
+  userRole?: UserRole,
+): number {
   const haystack = normalize(`${chunk.stepTitle} ${chunk.text} ${chunk.keywords}`);
   const queryNormalized = normalize(query);
   let score = 0;
@@ -166,6 +211,17 @@ function scoreChunk(chunk: KnowledgeChunk, query: string, queryTerms: string[]):
   for (const token of tokenize(query)) {
     if (tokenize(chunk.stepTitle).includes(token)) score += 6;
     if (normalize(chunk.text).includes(token)) score += 2;
+  }
+
+  if (userRole === "SE") {
+    if (/^se\s*:/i.test(chunk.text.trim())) score += 12;
+    if (hasTechnicalIntent(query) && /\b(architecture|install base|workspace|provision|health|portfolio|environment|deploy|pas)\b/i.test(haystack)) {
+      score += 6;
+    }
+  }
+
+  if (userRole === "AM" && /^am\s*:/i.test(chunk.text.trim())) {
+    score += 12;
   }
 
   return score;
@@ -209,7 +265,87 @@ function pickDetailsForRole(
     return roleSpecific.map((detail) => detail.replace(/^[^:]+:\s*/i, ""));
   }
 
+  if (role === "SE") {
+    const technical = details.filter((detail) =>
+      /\b(architecture|install base|workspace|smart account|provision|health|portfolio|environment|deploy|pas|technical|specialist)\b/i.test(
+        detail,
+      ),
+    );
+    if (technical.length > 0) {
+      return technical;
+    }
+  }
+
   return details.filter((detail) => !/^(am|se)\s*:/i.test(detail.trim()));
+}
+
+function roleAnswerLead(query: string, role?: UserRole): string {
+  if (role === "SE") {
+    return pickVariant(query, [
+      "From an SE perspective, ",
+      "On the technical side, ",
+      "What I'd focus on here: ",
+    ]);
+  }
+
+  if (role === "AM") {
+    return pickVariant(query, [
+      "From an AE perspective, ",
+      "For account ownership, ",
+      "Here's the commercial angle: ",
+    ]);
+  }
+
+  return pickVariant(query, [
+    "Here's what the playbook highlights: ",
+    "For this part of the EA journey, ",
+    "A good way to think about it: ",
+  ]);
+}
+
+function softenLowConfidence(answer: string, query: string, stepTitle: string): string {
+  const lead = pickVariant(query, [
+    `I think you're asking about "${stepTitle}" — `,
+    `This may be what you need on "${stepTitle}": `,
+    `Closest match I have is "${stepTitle}": `,
+  ]);
+  return `${lead}${answer.charAt(0).toLowerCase()}${answer.slice(1)}`;
+}
+
+function unknownAnswer(query: string, context: AssistantContext): string {
+  const seed = `${query}:${context.lastAnswer ?? ""}`;
+
+  if (context.userRole === "SE") {
+    return pickVariant(seed, [
+      "I don't have a exact line for that — try install base review, EA workspace cleanup, provisioning with PAS, or health checks.",
+      "That's a bit outside my playbook match — SEs often ask about Cisco Ready, onboarding, architecture validation, or True Forward. Pick one and I'll dig in.",
+      "I'm not confident on that one. Rephrase around a step (e.g. \"How do I clean up the EA workspace?\") or ask for the next step.",
+      "I couldn't tie that to a step. Technical topics I handle well: install base, provisioning, modifications, and lifecycle health checks.",
+    ]);
+  }
+
+  if (context.userRole === "AM") {
+    return pickVariant(seed, [
+      "I couldn't match that to a step — try targets, proposal prep, partner selection, or renewal timing.",
+      "Not sure I follow — ask about a specific phase (pre-sales vs post-sales) or say \"what's next?\"",
+      "I don't have a crisp answer for that. Try \"How do I identify EA targets?\" or \"What happens during onboarding?\"",
+    ]);
+  }
+
+  return pickVariant(seed, [
+    "I couldn't find that in the playbook. Try targets, install base, proposals, True Forward, onboarding, or renewal.",
+    "I'm not matching that to a step yet — name a topic (e.g. provisioning, milestones, renewal) or ask for the next step.",
+    "That's outside what I can answer directly. Ask about a playbook step or say \"mark that complete\" after we discuss one.",
+  ]);
+}
+
+function unclearFollowUp(context: AssistantContext, step: PlaybookStep): string {
+  const seed = `${step.id}:${context.lastAnswer ?? ""}`;
+  return pickVariant(seed, [
+    `I'm not sure I follow — want me to mark "${shortStepTitle(step)}" complete, or tell you what comes next?`,
+    `Did you mean "${shortStepTitle(step)}"? I can mark it done or walk you to the next step.`,
+    `We were on "${shortStepTitle(step)}" — should I mark it complete or show the next step?`,
+  ]);
 }
 
 function composeNaturalAnswer(
@@ -217,12 +353,18 @@ function composeNaturalAnswer(
   chunks: KnowledgeChunk[],
   query: string,
   userRole?: UserRole,
+  lowConfidence = false,
 ): string {
   const stepChunks = chunks.filter((chunk) => chunk.stepTitle === step.title);
 
   if (isWhoQuestion(query) && step.audience) {
+    const whoLead = pickVariant(query, [
+      `For "${shortStepTitle(step)}", work with `,
+      `You'll want to loop in `,
+      `This step typically involves `,
+    ]);
     return ensurePeriod(
-      `For this step, work with ${lowercaseFirst(step.audience)}`,
+      `${whoLead}${lowercaseFirst(step.audience)}`,
     );
   }
 
@@ -236,27 +378,38 @@ function composeNaturalAnswer(
     .map((detail) => ensurePeriod(firstClause(detail, 110)));
 
   const summary = ensurePeriod(firstClause(step.summary, 150));
+  const lead = roleAnswerLead(query, userRole);
 
+  let body: string;
   if (details.length === 0) {
-    return summary;
+    body = summary;
+  } else if (details.length === 1) {
+    body = `${summary} ${details[0]}`;
+  } else {
+    body = `${summary}\n\n${details[0]} ${details[1]}`;
   }
 
-  if (details.length === 1) {
-    return `${summary} ${details[0]}`;
+  const framed = `${lead}${body.charAt(0).toLowerCase()}${body.slice(1)}`;
+  if (lowConfidence) {
+    return softenLowConfidence(framed, query, shortStepTitle(step));
   }
 
-  return `${summary}\n\n${details[0]} ${details[1]}`;
+  return framed;
 }
 
 function helpMessage(context: AssistantContext): string {
-  const base =
-    'Ask me about any EA step, say "mark that complete", or ask for the next step.';
+  const roleHint =
+    context.userRole === "SE"
+      ? ' Ask about install base, provisioning, workspace cleanup, health checks, or say "next step".'
+      : context.userRole === "AM"
+        ? ' Ask about targets, proposals, partners, renewals, or say "mark that complete".'
+        : ' Ask about any EA step, say "mark that complete", or ask for the next step.';
 
   if (context.customerName) {
-    return `Working on ${context.customerName}. ${base}`;
+    return `Working on ${context.customerName}.${roleHint}`;
   }
 
-  return base;
+  return `Hi — I answer from the EA playbook, not the open web.${roleHint}`;
 }
 
 function isGreeting(query: string): boolean {
@@ -295,7 +448,254 @@ function isAffirmative(query: string): boolean {
 }
 
 function refersToPreviousTopic(query: string): boolean {
-  return /\b(that|this|it|what we (just )?discussed|the step)\b/i.test(query);
+  return /\b(that|this|it|what we (just )?discussed|the step|you (just )?said|same topic)\b/i.test(
+    query,
+  );
+}
+
+function isFollowUpQuery(query: string): boolean {
+  if (refersToPreviousTopic(query)) {
+    return true;
+  }
+
+  return /\b(specifically|tell me more|more detail|elaborate|break (it )?down|what am i looking for|what should i look|what do i look|go deeper|drill down|explain more|what about|what if|how about|like what|such as|for example|can you clarify|be more specific|what counts as|what would meet)\b/i.test(
+    query,
+  );
+}
+
+function splitSubQuestions(query: string): string[] {
+  const parts = query
+    .split(/\?+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 2);
+
+  if (parts.length <= 1) {
+    return [query.trim()];
+  }
+
+  return parts.map((part, index) =>
+    index < parts.length - 1 ? `${part}?` : part.endsWith("?") ? part : `${part}?`,
+  );
+}
+
+function scoreDetailMatch(detail: string, query: string): number {
+  const detailNorm = normalize(detail);
+  const queryNorm = stripConversationalNoise(query);
+  let score = 0;
+
+  if (detailNorm.includes(queryNorm) && queryNorm.length > 8) {
+    score += 24;
+  }
+
+  for (const token of tokenize(queryNorm)) {
+    if (token.length < 3) continue;
+    if (detailNorm.includes(token)) {
+      score += 5;
+    }
+  }
+
+  for (const term of expandQuery(queryNorm)) {
+    if (term.length < 3) continue;
+    if (detailNorm.includes(term)) {
+      score += term.includes(" ") ? 7 : 3;
+    }
+  }
+
+  return score;
+}
+
+type DetailCandidate = {
+  step: PlaybookStep;
+  detail: string;
+  detailKey: string;
+  score: number;
+};
+
+function collectDetailCandidates(
+  query: string,
+  context: AssistantContext,
+  preferSection?: string,
+): DetailCandidate[] {
+  const discussed = new Set(context.discussedDetailIds ?? []);
+  const candidates: DetailCandidate[] = [];
+
+  for (const step of PLAYBOOK_STEPS) {
+    const details = pickDetailsForRole(step.details, context.userRole);
+    details.forEach((detail, index) => {
+      const detailKey = detailId(step.id, index);
+      let score = scoreDetailMatch(detail, query);
+
+      if (preferSection && step.section === preferSection) {
+        score += 4;
+      }
+
+      if (context.lastStepId && step.id === context.lastStepId) {
+        score += 3;
+      }
+
+      if (discussed.has(detailKey)) {
+        score -= /\bwhat if\b/i.test(query) ? 4 : 12;
+      }
+
+      if (score > 0) {
+        candidates.push({ step, detail, detailKey, score });
+      }
+    });
+  }
+
+  return candidates.sort((a, b) => b.score - a.score);
+}
+
+function formatDetailAnswer(
+  query: string,
+  matches: DetailCandidate[],
+  context: AssistantContext,
+): { answer: string; discussedDetailIds: string[]; lastStepId: string } {
+  const discussed = new Set(context.discussedDetailIds ?? []);
+  const usedKeys: string[] = [];
+  const parts: string[] = [];
+
+  const lead = pickVariant(query, [
+    "Good follow-up — here's the playbook detail:",
+    "Drilling into that:",
+    "Specifically for your question:",
+    "Here's what to look at:",
+  ]);
+
+  parts.push(lead);
+
+  for (const match of matches.slice(0, 3)) {
+    if (usedKeys.includes(match.detailKey)) continue;
+    usedKeys.push(match.detailKey);
+    discussed.add(match.detailKey);
+    parts.push(`• ${ensurePeriod(firstClause(match.detail, 220))}`);
+  }
+
+  if (usedKeys.length === 0) {
+    const anchorStep = context.lastStepId
+      ? stepById(context.lastStepId)
+      : undefined;
+
+    if (anchorStep) {
+      const freshDetails = pickDetailsForRole(anchorStep.details, context.userRole)
+        .map((detail, index) => ({
+          detail,
+          detailKey: detailId(anchorStep.id, index),
+        }))
+        .filter((entry) => !discussed.has(entry.detailKey))
+        .slice(0, 2);
+
+      if (freshDetails.length > 0) {
+        parts.push(
+          pickVariant(query, [
+            `Still on "${shortStepTitle(anchorStep)}" — a few specifics:`,
+            `For "${shortStepTitle(anchorStep)}", also check:`,
+            `More from "${shortStepTitle(anchorStep)}":`,
+          ]),
+        );
+        for (const entry of freshDetails) {
+          usedKeys.push(entry.detailKey);
+          discussed.add(entry.detailKey);
+          parts.push(`• ${ensurePeriod(firstClause(entry.detail, 220))}`);
+        }
+      }
+    }
+  }
+
+  const focusStepId = matches[0]?.step.id ?? context.lastStepId ?? PLAYBOOK_STEPS[0].id;
+
+  return {
+    answer: parts.join("\n\n"),
+    discussedDetailIds: [...discussed],
+    lastStepId: focusStepId,
+  };
+}
+
+function handleDrillDown(
+  query: string,
+  context: AssistantContext,
+): AssistantResponse | null {
+  if (!context.lastStepId && !isFollowUpQuery(query)) {
+    return null;
+  }
+
+  const anchorStep = context.lastStepId ? stepById(context.lastStepId) : undefined;
+  const subQuestions = splitSubQuestions(query);
+  const allMatches: DetailCandidate[] = [];
+
+  for (const subQuestion of subQuestions) {
+    const matches = collectDetailCandidates(
+      subQuestion,
+      context,
+      anchorStep?.section,
+    );
+    if (matches[0]) {
+      allMatches.push(matches[0]);
+    }
+  }
+
+  const uniqueMatches = allMatches.filter(
+    (match, index, array) =>
+      array.findIndex((item) => item.detailKey === match.detailKey) === index,
+  );
+
+  if (uniqueMatches.length === 0 && !isFollowUpQuery(query)) {
+    return null;
+  }
+
+  if (uniqueMatches.length === 0 && anchorStep) {
+    const fallbackMatches = pickDetailsForRole(anchorStep.details, context.userRole)
+      .map((detail, index) => ({
+        step: anchorStep,
+        detail,
+        detailKey: detailId(anchorStep.id, index),
+        score: 1,
+      }))
+      .filter(
+        (entry) => !(context.discussedDetailIds ?? []).includes(entry.detailKey),
+      )
+      .slice(0, 2);
+
+    if (fallbackMatches.length === 0) {
+      return {
+        answer: pickVariant(query, [
+          `We've covered the main points on "${shortStepTitle(anchorStep)}". Want the next step, or should I mark this complete?`,
+          `That's everything I have on "${shortStepTitle(anchorStep)}" for now — say "next step" to keep going.`,
+        ]),
+        found: true,
+        lastStepId: anchorStep.id,
+        discussedDetailIds: context.discussedDetailIds,
+      };
+    }
+
+    const formatted = formatDetailAnswer(query, fallbackMatches, context);
+    return {
+      answer: formatted.answer,
+      found: true,
+      lastStepId: formatted.lastStepId,
+      discussedDetailIds: formatted.discussedDetailIds,
+    };
+  }
+
+  const formatted = formatDetailAnswer(query, uniqueMatches, context);
+  return {
+    answer: formatted.answer,
+    found: true,
+    lastStepId: formatted.lastStepId,
+    discussedDetailIds: formatted.discussedDetailIds,
+  };
+}
+
+function markDiscussedFromAnswer(
+  step: PlaybookStep,
+  userRole: UserRole | undefined,
+  existing: string[] = [],
+): string[] {
+  const discussed = new Set(existing);
+  pickDetailsForRole(step.details, userRole)
+    .slice(0, 2)
+    .forEach((_, index) => discussed.add(detailId(step.id, index)));
+  return [...discussed];
 }
 
 function isStepComplete(step: PlaybookStep, completedIds: Set<string>): boolean {
@@ -312,48 +712,66 @@ function shortStepTitle(step: PlaybookStep): string {
     : step.title;
 }
 
-function roleScoreBoost(step: PlaybookStep, role?: UserRole): number {
+function roleScoreBoost(step: PlaybookStep, role?: UserRole, query?: string): number {
   if (!role || role === "Other") {
     return 0;
   }
 
+  const technical = query ? hasTechnicalIntent(query) : false;
+
   if (role === "AM") {
     if (step.owner === "AM") return 10;
     if (step.owner === "AM & SE") return 4;
-    return -8;
+    return -10;
   }
 
-  if (step.owner === "SE") return 10;
-  if (step.owner === "AM & SE") return 4;
-  return -8;
+  if (step.owner === "SE") return 12;
+  if (step.owner === "AM & SE") return technical ? 8 : 5;
+  return technical ? -4 : -12;
 }
 
-function findBestStep(query: string, role?: UserRole): PlaybookStep | undefined {
-  const queryTerms = expandQuery(query);
-  const ranked = KNOWLEDGE_BASE.map((chunk) => ({
+function rankChunks(query: string, role?: UserRole) {
+  const cleanedQuery = stripConversationalNoise(query);
+  const queryTerms = expandQuery(cleanedQuery.length > 2 ? cleanedQuery : query);
+
+  return KNOWLEDGE_BASE.map((chunk) => ({
     chunk,
-    score: scoreChunk(chunk, query, queryTerms),
+    score: scoreChunk(chunk, cleanedQuery.length > 2 ? cleanedQuery : query, queryTerms, role),
   }))
-    .filter((entry) => entry.score > 0)
     .map((entry) => {
       const step = PLAYBOOK_STEPS.find((item) => item.title === entry.chunk.stepTitle);
       return {
         ...entry,
-        score: entry.score + (step ? roleScoreBoost(step, role) : 0),
+        step,
+        score:
+          entry.score +
+          (step ? roleScoreBoost(step, role, query) : 0),
       };
     })
     .filter((entry) => entry.score > 0)
     .sort((a, b) => b.score - a.score);
+}
 
+function pickBestStepFromRanked(
+  ranked: ReturnType<typeof rankChunks>,
+  role?: UserRole,
+): PlaybookStep | undefined {
   if (ranked.length === 0) return undefined;
 
-  const bestTitle = ranked[0]?.chunk.stepTitle;
-  return (
-    PLAYBOOK_STEPS.find((item) => item.title === bestTitle) ??
-    PLAYBOOK_STEPS.find((item) =>
-      ranked.some((entry) => entry.chunk.stepTitle === item.title),
-    )
-  );
+  const top = ranked[0];
+  const runnerUp = ranked[1];
+
+  if (role === "SE" && top?.step && runnerUp?.step && top.step.owner === "AM" && runnerUp.step.owner !== "AM") {
+    if (runnerUp.score >= top.score * 0.72) {
+      return runnerUp.step;
+    }
+  }
+
+  return top?.step ?? PLAYBOOK_STEPS.find((item) => item.title === top?.chunk.stepTitle);
+}
+
+function findBestStep(query: string, role?: UserRole): PlaybookStep | undefined {
+  return pickBestStepFromRanked(rankChunks(query, role), role);
 }
 
 function resolveTargetStep(
@@ -635,29 +1053,21 @@ export function answerPlaybookQuestion(
     return actionResponse;
   }
 
-  const queryTerms = expandQuery(trimmed);
-  const ranked = KNOWLEDGE_BASE.map((chunk) => ({
-    chunk,
-    score: scoreChunk(chunk, trimmed, queryTerms),
-  }))
-    .map((entry) => {
-      const step = PLAYBOOK_STEPS.find(
-        (item) => item.title === entry.chunk.stepTitle,
-      );
-      return {
-        ...entry,
-        score: entry.score + (step ? roleScoreBoost(step, context.userRole) : 0),
-      };
-    })
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score);
+  if (context.lastStepId && isFollowUpQuery(trimmed)) {
+    const drillDown = handleDrillDown(trimmed, context);
+    if (drillDown) {
+      return drillDown;
+    }
+  }
+
+  const ranked = rankChunks(trimmed, context.userRole);
 
   if (ranked.length === 0) {
     if (context.lastStepId) {
       const step = stepById(context.lastStepId);
       if (step) {
         return {
-          answer: `I'm not sure I follow — want me to mark "${shortStepTitle(step)}" complete, or tell you what comes next?`,
+          answer: unclearFollowUp(context, step),
           found: false,
           lastStepId: context.lastStepId,
         };
@@ -665,33 +1075,56 @@ export function answerPlaybookQuestion(
     }
 
     return {
-      answer:
-        "I couldn't find that in the playbook. Try asking about targets, install base, proposals, True Forward, onboarding, or renewal.",
+      answer: unknownAnswer(trimmed, context),
       found: false,
     };
   }
 
   const topScore = ranked[0]?.score ?? 0;
+  const lowConfidence = topScore < 14;
   const topChunks = ranked
     .filter((entry) => entry.score >= Math.max(3, topScore * 0.55))
     .slice(0, 3)
     .map((entry) => entry.chunk);
 
-  const bestTitle = topChunks[0]?.stepTitle;
-  const step =
-    PLAYBOOK_STEPS.find((item) => item.title === bestTitle) ??
-    PLAYBOOK_STEPS.find((item) =>
-      topChunks.some((chunk) => chunk.stepTitle === item.title),
-    );
+  const step = pickBestStepFromRanked(ranked, context.userRole);
 
   if (!step) {
     const fallback = ensurePeriod(firstClause(topChunks[0]?.text ?? "", 180));
     return { answer: fallback, found: true };
   }
 
+  if (step.id === context.lastStepId) {
+    const drillDown = handleDrillDown(trimmed, context);
+    if (drillDown) {
+      return drillDown;
+    }
+  }
+
+  let answer = composeNaturalAnswer(
+    step,
+    topChunks,
+    trimmed,
+    context.userRole,
+    lowConfidence,
+  );
+
+  if (answer === context.lastAnswer) {
+    answer = `${answer}\n\n${pickVariant(trimmed, [
+      "Want the next step, or should I mark this one complete?",
+      "Say \"next step\" if you want to keep moving.",
+      "I can mark this complete if you're done with it.",
+    ])}`;
+  }
+
   return {
-    answer: composeNaturalAnswer(step, topChunks, trimmed, context.userRole),
+    answer,
     found: true,
     lastStepId: step.id,
+    discussedDetailIds: markDiscussedFromAnswer(
+      step,
+      context.userRole,
+      context.discussedDetailIds,
+    ),
   };
 }

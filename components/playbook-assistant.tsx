@@ -22,12 +22,32 @@ type ChatMessage = {
   stream?: boolean;
 };
 
-const STARTER_QUESTIONS = [
-  "How do I identify EA targets?",
-  "How does True Forward work?",
-  "What happens during onboarding?",
-  "How do I prep for EA renewal?",
-];
+const STARTER_QUESTIONS_BY_ROLE = {
+  SE: [
+    "How do I review install base for EA?",
+    "What does SE do during onboarding?",
+    "How do health checks work?",
+    "What is the True Forward process?",
+  ],
+  AM: [
+    "How do I identify EA targets?",
+    "How do I build the proposal?",
+    "How do I select a partner?",
+    "How do I prep for EA renewal?",
+  ],
+  default: [
+    "How do I identify EA targets?",
+    "How does True Forward work?",
+    "What happens during onboarding?",
+    "How do I prep for EA renewal?",
+  ],
+} as const;
+
+function starterQuestions(role?: CustomerSession["userRole"]): string[] {
+  if (role === "SE") return [...STARTER_QUESTIONS_BY_ROLE.SE];
+  if (role === "AM") return [...STARTER_QUESTIONS_BY_ROLE.AM];
+  return [...STARTER_QUESTIONS_BY_ROLE.default];
+}
 
 const THINKING_DELAY_MS = 450;
 const STREAM_CHUNK_MS = 16;
@@ -49,6 +69,8 @@ export function PlaybookAssistant({
   const messageId = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastStepIdRef = useRef<string | undefined>(undefined);
+  const lastAnswerRef = useRef<string | undefined>(undefined);
+  const discussedDetailIdsRef = useRef<string[]>([]);
   const completedIdsRef = useRef(completedIds);
 
   useEffect(() => {
@@ -71,6 +93,8 @@ export function PlaybookAssistant({
       },
     ]);
     lastStepIdRef.current = undefined;
+    lastAnswerRef.current = undefined;
+    discussedDetailIdsRef.current = [];
   }, [session?.customerName, session?.userRole, session?.email, session?.otherRoleLabel]);
 
   const hasUserMessage = messages.some((message) => message.role === "user");
@@ -114,10 +138,16 @@ export function PlaybookAssistant({
         lastStepId: lastStepIdRef.current,
         userRole: session?.userRole,
         customerName: session?.customerName,
+        lastAnswer: lastAnswerRef.current,
+        discussedDetailIds: discussedDetailIdsRef.current,
       });
 
       if (result.lastStepId) {
         lastStepIdRef.current = result.lastStepId;
+      }
+      lastAnswerRef.current = result.answer;
+      if (result.discussedDetailIds) {
+        discussedDetailIdsRef.current = result.discussedDetailIds;
       }
 
       result.actions?.forEach((action) => {
@@ -199,7 +229,7 @@ export function PlaybookAssistant({
           <div className="border-t border-border px-4 py-3">
             {showStarterQuestions ? (
               <div className="mb-2 flex flex-wrap gap-1.5">
-                {STARTER_QUESTIONS.map((question) => (
+                {starterQuestions(session?.userRole).map((question) => (
                   <button
                     key={question}
                     type="button"
