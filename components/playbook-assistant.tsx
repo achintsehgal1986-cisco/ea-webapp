@@ -9,10 +9,10 @@ import type { PlaybookStep } from "@/lib/types";
 
 function welcomeMessage(session?: CustomerSession | null): string {
   if (session) {
-    return `Hi! How can I help with ${session.customerName}'s EA? You're set up as ${roleDisplayLabel(session)}.`;
+    return `Hey! I'm here to help with ${session.customerName}'s EA — you're set up as ${roleDisplayLabel(session)}. What do you want to work on?`;
   }
 
-  return "Hi! How can I help you with your EA?";
+  return "Hey! I'm your EA playbook guide. Ask me anything about a step, follow up for more detail, or say \"what's next?\"";
 }
 
 type ChatMessage = {
@@ -30,6 +30,7 @@ const STARTER_QUESTIONS_BY_ROLE = {
     "What is the True Forward process?",
   ],
   AM: [
+    "What should I focus on as an AE?",
     "How do I identify EA targets?",
     "How do I build the proposal?",
     "How do I select a partner?",
@@ -49,8 +50,10 @@ function starterQuestions(role?: CustomerSession["userRole"]): string[] {
   return [...STARTER_QUESTIONS_BY_ROLE.default];
 }
 
-const THINKING_DELAY_MS = 450;
-const STREAM_CHUNK_MS = 16;
+const THINKING_DELAY_BASE_MS = 280;
+const THINKING_DELAY_PER_CHAR_MS = 10;
+const THINKING_DELAY_MAX_MS = 1000;
+const STREAM_CHUNK_MS = 14;
 
 type PlaybookAssistantProps = {
   session?: CustomerSession | null;
@@ -71,6 +74,7 @@ export function PlaybookAssistant({
   const lastStepIdRef = useRef<string | undefined>(undefined);
   const lastAnswerRef = useRef<string | undefined>(undefined);
   const discussedDetailIdsRef = useRef<string[]>([]);
+  const previousUserQueryRef = useRef<string | undefined>(undefined);
   const completedIdsRef = useRef(completedIds);
 
   useEffect(() => {
@@ -95,6 +99,7 @@ export function PlaybookAssistant({
     lastStepIdRef.current = undefined;
     lastAnswerRef.current = undefined;
     discussedDetailIdsRef.current = [];
+    previousUserQueryRef.current = undefined;
   }, [session?.customerName, session?.userRole, session?.email, session?.otherRoleLabel]);
 
   const hasUserMessage = messages.some((message) => message.role === "user");
@@ -132,6 +137,11 @@ export function PlaybookAssistant({
     setInput("");
     setIsResponding(true);
 
+    const thinkingMs = Math.min(
+      THINKING_DELAY_MAX_MS,
+      THINKING_DELAY_BASE_MS + trimmed.length * THINKING_DELAY_PER_CHAR_MS,
+    );
+
     window.setTimeout(() => {
       const result = answerPlaybookQuestion(trimmed, {
         completedIds: completedIdsRef.current,
@@ -139,8 +149,11 @@ export function PlaybookAssistant({
         userRole: session?.userRole,
         customerName: session?.customerName,
         lastAnswer: lastAnswerRef.current,
+        lastUserQuery: previousUserQueryRef.current,
         discussedDetailIds: discussedDetailIdsRef.current,
       });
+
+      previousUserQueryRef.current = trimmed;
 
       if (result.lastStepId) {
         lastStepIdRef.current = result.lastStepId;
@@ -168,7 +181,7 @@ export function PlaybookAssistant({
 
       setMessages((current) => [...current, assistantMessage]);
       setIsResponding(false);
-    }, THINKING_DELAY_MS);
+    }, thinkingMs);
   }
 
   return (
@@ -252,7 +265,7 @@ export function PlaybookAssistant({
               <input
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
-                placeholder="Ask a question..."
+                placeholder="Ask about any EA step..."
                 disabled={isResponding || isStreaming}
                 className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/15 disabled:cursor-not-allowed disabled:opacity-60"
               />
