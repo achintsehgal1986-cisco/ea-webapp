@@ -110,9 +110,7 @@ export function PlaybookApp() {
       return;
     }
 
-    if (readSetupSkipped()) {
-      trackVisitOnce({ skippedSetup: true });
-    }
+    trackVisitOnce({ skippedSetup: readSetupSkipped() });
   }, []);
 
   function persist(next: Set<string>) {

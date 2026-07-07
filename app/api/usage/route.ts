@@ -36,6 +36,22 @@ async function postToGoogleSheetsWebhook(
   });
 }
 
+function trackingConfigured(): boolean {
+  return Boolean(
+    process.env.GOOGLE_SHEETS_WEBHOOK_URL &&
+      process.env.GOOGLE_SHEETS_WEBHOOK_SECRET,
+  );
+}
+
+export async function GET() {
+  return NextResponse.json({
+    configured: trackingConfigured(),
+    message: trackingConfigured()
+      ? "Usage tracking is configured."
+      : "Set GOOGLE_SHEETS_WEBHOOK_URL and GOOGLE_SHEETS_WEBHOOK_SECRET in Vercel (Production).",
+  });
+}
+
 export async function POST(request: Request) {
   const body = (await request.json()) as UsageRequestBody;
   const eventType = body.eventType;
@@ -72,15 +88,15 @@ export async function POST(request: Request) {
   const webhookUrl = process.env.GOOGLE_SHEETS_WEBHOOK_URL;
   const webhookSecret = process.env.GOOGLE_SHEETS_WEBHOOK_SECRET;
 
-  if (!webhookUrl || !webhookSecret) {
+  if (!trackingConfigured()) {
     return NextResponse.json(
       { ok: false, stored: false, message: "Usage tracking is not configured." },
       { status: 202 },
     );
   }
 
-  const response = await postToGoogleSheetsWebhook(webhookUrl, {
-    secret: webhookSecret,
+  const response = await postToGoogleSheetsWebhook(webhookUrl!, {
+    secret: webhookSecret!,
     eventType,
     email,
     customerName,
